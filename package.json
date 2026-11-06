@@ -1,0 +1,9 @@
+{
+  "name": "shotclock-game-server-public",
+  "private": true,
+  "version": "0.0.1",
+  "scripts": {
+    "start": "npm --prefix server start",
+    "ci:server": "npm --prefix server ci"
+  }
+}
