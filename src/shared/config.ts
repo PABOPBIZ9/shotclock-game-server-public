@@ -28,32 +28,63 @@ export const RESTRICTED_STATES: readonly string[] = (env("BLOCKED_REGIONS") ?? "
   ? (env("BLOCKED_REGIONS") as string).split(",").map((s) => s.trim().toUpperCase()).filter(Boolean)
   : [...DEFAULT_BLOCKED_REGIONS];
 
-export type TierId = "free" | "micro" | "low" | "mid" | "high" | "whale";
+export type TierId = "free" | "micro" | "low" | "mid" | "degen" | "whale";
 
 export interface EntryTier {
   id: TierId;
   label: string;
-  /** Entry fee in USD (USDC). 0 = free. */
+  /**
+   * Exact SOL buy-in (nominal). Paid SOL path uses this — never FX-quoted.
+   * Aligns with STAKES: Micro 0.035 / Low 0.088 / Mid 0.35 / Degen 0.88 / Whale 3.50.
+   */
+  entrySol: number;
+  /** USDC path only (6-decimal USD). Unused when currency=SOL. */
+  entryUsdc: number;
+  /** @deprecated alias of entryUsdc for older call sites; prefer entrySol for SOL. */
   entry: number;
   paid: boolean;
   pointsReward: number;
   color: string;
 }
 
+/** Exact lamports for a SOL stake (integer; avoids float surprise). */
+export function solToLamports(sol: number): bigint {
+  if (!(sol >= 0) || !Number.isFinite(sol)) throw new Error("invalid_sol");
+  // Known exact stakes first
+  const known: Record<string, bigint> = {
+    "0": 0n,
+    "0.035": 35_000_000n,
+    "0.088": 88_000_000n,
+    "0.35": 350_000_000n,
+    "0.88": 880_000_000n,
+    "3.5": 3_500_000_000n,
+    // legacy aliases (no longer offered)
+    "0.1": 100_000_000n,
+    "1": 1_000_000_000n,
+  };
+  const key = String(sol);
+  if (key in known) return known[key];
+  return BigInt(Math.round(sol * 1_000_000_000));
+}
+
 export const ENTRY_TIERS: readonly EntryTier[] = [
-  { id: "free", label: "Free", entry: 0, paid: false, pointsReward: 250, color: "jade" },
-  { id: "micro", label: "Micro", entry: 1, paid: true, pointsReward: 400, color: "sky" },
-  { id: "low", label: "Low", entry: 5, paid: true, pointsReward: 550, color: "violet" },
-  { id: "mid", label: "Mid", entry: 25, paid: true, pointsReward: 700, color: "gold" },
-  { id: "high", label: "High", entry: 100, paid: true, pointsReward: 900, color: "orange" },
-  { id: "whale", label: "Whale", entry: 500, paid: true, pointsReward: 1200, color: "ember" },
+  { id: "free", label: "Freeroll", entrySol: 0, entryUsdc: 0, entry: 0, paid: false, pointsReward: 250, color: "jade" },
+  { id: "micro", label: "Micro", entrySol: 0.035, entryUsdc: 0, entry: 0.035, paid: true, pointsReward: 400, color: "sky" },
+  { id: "low", label: "Low", entrySol: 0.088, entryUsdc: 0, entry: 0.088, paid: true, pointsReward: 550, color: "violet" },
+  { id: "mid", label: "Mid", entrySol: 0.35, entryUsdc: 0, entry: 0.35, paid: true, pointsReward: 700, color: "gold" },
+  { id: "degen", label: "Degen", entrySol: 0.88, entryUsdc: 0, entry: 0.88, paid: true, pointsReward: 900, color: "orange" },
+  { id: "whale", label: "Whale", entrySol: 3.5, entryUsdc: 0, entry: 3.5, paid: true, pointsReward: 1200, color: "ember" },
 ];
 
-export const tierById = (id: string) => ENTRY_TIERS.find((t) => t.id === id);
+/** Resolve tier; legacy id "high" maps to Degen 0.88. */
+export const tierById = (id: string) => {
+  const key = id === "high" ? "degen" : id;
+  return ENTRY_TIERS.find((t) => t.id === key);
+};
 
-/** Default rake in basis points (1112 = 11.12%). Players keep 88.88%. Server reads RAKE_BPS. */
-export const DEFAULT_RAKE_BPS = 1112;
-/** Share of gross entries that funds the prize pool (8888 = 88.88%). */
+/** Default rake in basis points (1111 = 11.11%). Players keep 88.89%. Server reads RAKE_BPS. */
+export const DEFAULT_RAKE_BPS = 1111;
+/** Share of gross entries that funds the prize pool (8889 = 88.89%). */
 export const PLAYER_POOL_BPS = 10_000 - DEFAULT_RAKE_BPS;
 
 /**
@@ -168,9 +199,13 @@ export function paidEntryEligibility(input: {
   if (!enabled) return { ok: false, reason: "disabled" };
   const adult = input.ageConfirmed === true || (input.age !== undefined && input.age >= MIN_AGE_PAID);
   if (!adult) return { ok: false, reason: "age" };
-  const region = (input.region ?? "").toUpperCase();
-  const blocked = input.blocked ?? RESTRICTED_STATES;
-  if (!region || blocked.includes(region)) return { ok: false, reason: "region" };
+  // Region: only enforced when a region value is supplied (e.g. via REGION_HEADER).
+  // Frontend /api/eligibility already hides paid UI for restricted US states.
+  if (input.region !== undefined && input.region !== null) {
+    const region = String(input.region).toUpperCase();
+    const blocked = input.blocked ?? RESTRICTED_STATES;
+    if (!region || blocked.includes(region)) return { ok: false, reason: "region" };
+  }
   if (input.allowlist && input.allowlist.length && !(input.wallet && input.allowlist.includes(input.wallet))) {
     return { ok: false, reason: "allowlist" };
   }
@@ -183,14 +218,14 @@ export function paidEntryEligibility(input: {
  */
 export const POOL_SPLIT = [
   { id: "players", label: "Prize pool (players)", bps: PLAYER_POOL_BPS, color: "#E0115F" },
-  { id: "teachers", label: "Instructors (teachers & course creators)", bps: 371, color: "#1E3FAE" },
-  { id: "platform", label: "Platform fees", bps: 371, color: "#2B5BFF" },
-  { id: "community", label: "Community chest · marketing · promo · treasury", bps: 370, color: "#0E9F6E" },
+  { id: "teachers", label: "Instructors (teachers & course creators)", bps: 370, color: "#1E3FAE" },
+  { id: "platform", label: "Platform fees", bps: 370, color: "#2B5BFF" },
+  { id: "community", label: "Community chest · marketing · promo · treasury", bps: 371, color: "#0E9F6E" },
 ] as const;
 
-/** Fee slices excluding the player prize pool — even 3-way of 11.12% (371 + 371 + 370 = 1112 bps). */
+/** Fee slices excluding the player prize pool — even 3-way of 11.11% (370 + 370 + 371 = 1111 bps). */
 export const RAKE_SPLIT = POOL_SPLIT.filter((s) => s.id !== "players");
 
-/** Soft-launch Solana wallets. Prize receives buy-ins (88.88% player pools); Ops receives the 11.12% fee split. */
+/** Soft-launch Solana wallets. Prize receives buy-ins (88.89% player pools); Ops receives the 11.11% fee split. */
 export const PRIZE_WALLET_SOL = process.env.NEXT_PUBLIC_PRIZE_WALLET_SOL || "5pCvMAKJFBkLEwqUhmgDeTkpFnBGd7te3EgMs6jZ9nM4";
 export const OPS_WALLET_SOL = process.env.NEXT_PUBLIC_OPS_WALLET_SOL || "kqZjzwxamA6trUrKuVeBpPtwhXhGB1vPRHha7srEGsW";
