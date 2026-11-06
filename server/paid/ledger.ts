@@ -6,7 +6,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { ENTRY_TIERS, paidEntryEligibility, payoutTable, prizePool, splitPrizes, tierById } from "../../src/shared/config";
+import { ENTRY_TIERS, paidEntryEligibility, payoutTable, prizePool, splitPrizes, solToLamports, tierById } from "../../src/shared/config";
 import type { ChainVerifier } from "./chain";
 import { isAddress, type PaidConfig } from "./config";
 
@@ -79,15 +79,46 @@ export class PaidLedger {
     }
   }
 
-  private save() {
-    if (!this.file) return;
-    writeFileSync(this.file, JSON.stringify({ entries: [...this.entries.values()], payouts: [...this.payouts.values()] }));
+  /** Optional Neon hydrate (private deploy). No-op if DATABASE_URL missing or module unavailable. */
+  async hydrateFromNeon() {
+    try {
+      const mod = await import("./neonStore");
+      if (!mod.neonPaidReady().ready) return;
+      const state = await mod.loadPaidState();
+      for (const e of state.entries) this.entries.set(e.id, e);
+      for (const p of state.payouts) this.payouts.set(p.id, p);
+      for (const s of state.signatures) this.usedSignatures.add(s);
+    } catch {
+      /* neon optional on hosts that only use LEDGER_FILE */
+    }
   }
 
-  private toBase(currency: "USDC" | "SOL", usd: number): bigint {
-    if (currency === "USDC") return BigInt(Math.round(usd * 1e6));
-    if (!this.cfg.solUsdRate) throw new Error("SOL pricing not configured");
-    return BigInt(Math.round((usd / this.cfg.solUsdRate) * 1e9));
+  private save() {
+    if (this.file) {
+      writeFileSync(this.file, JSON.stringify({ entries: [...this.entries.values()], payouts: [...this.payouts.values()] }));
+    }
+    // Best-effort Neon durability (private image with neonStore + DATABASE_URL).
+    void this.persistNeon();
+  }
+
+  private async persistNeon() {
+    try {
+      const mod = await import("./neonStore");
+      if (!mod.neonPaidReady().ready) return;
+      for (const e of this.entries.values()) await mod.upsertEntry(e);
+      for (const p of this.payouts.values()) await mod.upsertPayout(p);
+      for (const e of this.entries.values()) {
+        if (e.signature) await mod.recordSignature(e.signature, e.id);
+      }
+    } catch {
+      /* ignore — file/memory still authoritative on public snapshot */
+    }
+  }
+
+  /** Human units → base units. SOL uses fixed nominal buy-ins (never FX). */
+  private toBase(currency: "USDC" | "SOL", human: number): bigint {
+    if (currency === "USDC") return BigInt(Math.round(human * 1e6));
+    return solToLamports(human);
   }
 
   createIntent(input: { wallet: string; tableKey: string; size: number; tier: string; currency: "USDC" | "SOL"; ageConfirmed: boolean; region?: string }) {
@@ -110,9 +141,11 @@ export class PaidLedger {
     if (mine.reduce((s, e) => s + e.usd, 0) + tier.entry > this.cfg.maxDailyUsd) throw new Error("Daily spend limit reached");
     if (mine.some((e) => e.tableKey === input.tableKey && (e.status === "paid" || e.status === "pending"))) throw new Error("Already entered this table");
 
+    const stakeHuman = input.currency === "SOL" ? tier.entrySol : (tier.entryUsdc || tier.entry);
     const e: Entry = {
       id: id("ent"), wallet: input.wallet, tableKey: input.tableKey, size: input.size, tier: tier.id,
-      currency: input.currency, usd: tier.entry, amount: this.toBase(input.currency, tier.entry).toString(),
+      // usd field = stake human units (SOL when currency=SOL; USDC dollars when USDC)
+      currency: input.currency, usd: stakeHuman, amount: this.toBase(input.currency, stakeHuman).toString(),
       reference: newReference(), recipient: this.cfg.treasury,
       mint: input.currency === "USDC" ? this.cfg.usdcMint : undefined,
       status: "pending", createdAt: this.now(),

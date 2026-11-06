@@ -38,7 +38,7 @@ export function bombPopsDisplayName(nick: BombPopsEventName, stakeLabel: string)
 }
 
 const FREE_PRIZE = "5,000 pts + Rocket badge";
-const PAID_PRIZE = "Est. if full · grows with entries · 88.88% to players";
+const PAID_PRIZE = "Est. if full · grows with entries · 88.89% to players";
 
 /**
  * Bomb Pops Series — one topic/course, 3 named events × 4 stake levels.

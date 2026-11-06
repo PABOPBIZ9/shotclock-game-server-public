@@ -13,7 +13,7 @@ export interface PaidConfig {
   rpcUrl: string;
   treasury: string;
   usdcMint: string;
-  solUsdRate: number; // manual rate used to quote SOL entries (scaffold; use an oracle later)
+  solUsdRate: number; // optional legacy FX; SOL buy-ins are fixed entrySol (not rate-quoted)
   rakeBps: number;
   adminKey: string;
   dynamicEnvironmentId: string;
@@ -73,8 +73,8 @@ export function loadPaidConfig(env: Record<string, string | undefined> = process
   if (!isAddress(cfg.treasury)) off("TREASURY_ADDRESS missing or invalid");
   if (!cfg.adminKey || cfg.adminKey.length < 24) off("ADMIN_KEY missing or shorter than 24 chars");
   if (!cfg.dynamicEnvironmentId) off("DYNAMIC_ENVIRONMENT_ID missing");
-  if (cfg.allowlist.length === 0) off("FRIENDS_ALLOWLIST is empty (friends-only testing required)");
-  if (cfg.currencies.includes("SOL") && !cfg.solUsdRate) cfg.currencies = cfg.currencies.filter((c) => c !== "SOL");
+  // Empty FRIENDS_ALLOWLIST = open to any Dynamic JWT-verified Solana wallet (not disabled).
+  // SOL uses fixed entrySol — do not drop SOL when SOL_USD_RATE unset.
   if (!cfg.currencies.length) off("no currency configured");
   return cfg;
 }
