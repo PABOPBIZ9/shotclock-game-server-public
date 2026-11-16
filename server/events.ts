@@ -3,7 +3,7 @@
  * Shared across sockets — not per-browser localStorage.
  * Paid tiers stay blocked until PAID_ENTRY_ENABLED + legal.
  */
-import { BOMB_POPS_SERIES, isScheduledLive, nextStart, regOpen, type ScheduledEvent } from "../src/shared/schedule";
+import { BOMB_POPS_SERIES, isScheduledLive, lastStart, lateRegOpen, nextStart, regOpen, startAfter, type ScheduledEvent } from "../src/shared/schedule";
 
 export type Enrollment = {
   playerId: string;
@@ -12,14 +12,46 @@ export type Enrollment = {
   at: number;
 };
 
-const byEvent = new Map<string, Map<string, Enrollment>>();
+const byInstance = new Map<string, Map<string, Enrollment>>();
+
+function instKey(eventId: string, startAt: number) {
+  return `${eventId}@${startAt}`;
+}
+
+function mapFor(eventId: string, startAt: number) {
+  const k = instKey(eventId, startAt);
+  let map = byInstance.get(k);
+  if (!map) {
+    map = new Map();
+    byInstance.set(k, map);
+  }
+  return map;
+}
 
 export function eventById(id: string): ScheduledEvent | undefined {
   return BOMB_POPS_SERIES.find((e) => e.id === id);
 }
 
-export function listEnrollments(eventId: string): Enrollment[] {
-  return [...(byEvent.get(eventId)?.values() ?? [])].sort((a, b) => a.at - b.at);
+function currentHeat(ev: ScheduledEvent, now: number): number {
+  return lateRegOpen(ev, now) ? lastStart(ev, now) : nextStart(ev, now);
+}
+
+/** Open heat: current/upcoming if a seat remains, otherwise the next start (FCFS). */
+function openHeat(ev: ScheduledEvent, now: number): { start: number; map: Map<string, Enrollment> } {
+  let start = currentHeat(ev, now);
+  if (!Number.isFinite(start)) return { start, map: mapFor(ev.id, start) };
+  let map = mapFor(ev.id, start);
+  if (map.size >= ev.practiceField) {
+    start = startAfter(ev, start);
+    map = mapFor(ev.id, start);
+  }
+  return { start, map };
+}
+
+export function listEnrollments(eventId: string, startAt?: number): Enrollment[] {
+  const ev = eventById(eventId);
+  const start = startAt ?? (ev ? openHeat(ev, Date.now()).start : 0);
+  return [...(mapFor(eventId, start).values())].sort((a, b) => a.at - b.at);
 }
 
 export function registerEvent(opts: {
@@ -38,18 +70,15 @@ export function registerEvent(opts: {
     return { ok: false, error: "This named event is a draft config (unscheduled). Use a live First Freeze freeroll or a fill-to-start table." };
   }
   const now = opts.now ?? Date.now();
-  if (!regOpen(ev, now)) return { ok: false, error: "Registration is closed for this start" };
+  if (!isScheduledLive(ev)) return { ok: false, error: "Registration is closed for this start" };
   const playerId = String(opts.playerId || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
   if (!playerId) return { ok: false, error: "Stable player id required" };
   const capacity = ev.practiceField;
-  let map = byEvent.get(ev.id);
-  if (!map) {
-    map = new Map();
-    byEvent.set(ev.id, map);
-  }
+  const { start, map } = openHeat(ev, now);
+  if (!Number.isFinite(start)) return { ok: false, error: "Registration is closed for this start" };
   if (map.has(playerId)) {
     const enrollment = map.get(playerId)!;
-    return { ok: true, enrollment, count: map.size, capacity, startAt: nextStart(ev, now) };
+    return { ok: true, enrollment, count: map.size, capacity, startAt: start };
   }
   if (map.size >= capacity) return { ok: false, error: "Event is full" };
   const enrollment: Enrollment = {
@@ -59,22 +88,25 @@ export function registerEvent(opts: {
     at: now,
   };
   map.set(playerId, enrollment);
-  return { ok: true, enrollment, count: map.size, capacity, startAt: nextStart(ev, now) };
+  return { ok: true, enrollment, count: map.size, capacity, startAt: start };
 }
 
 export function unregisterEvent(eventId: string, playerId: string) {
-  const map = byEvent.get(eventId);
-  if (!map) return false;
-  const ok = map.delete(playerId);
-  if (map.size === 0) byEvent.delete(eventId);
+  let ok = false;
+  for (const [k, map] of byInstance) {
+    if (k === eventId || k.startsWith(eventId + "@")) {
+      if (map.delete(playerId)) ok = true;
+      if (map.size === 0) byInstance.delete(k);
+    }
+  }
   return ok;
 }
 
 export function eventSnapshot(eventId: string, now = Date.now()) {
   const ev = eventById(eventId);
   if (!ev) return null;
-  const list = listEnrollments(eventId);
-  const start = nextStart(ev, now);
+  const { start, map } = openHeat(ev, now);
+  const list = [...map.values()].sort((a, b) => a.at - b.at);
   return {
     id: ev.id,
     name: ev.name,
@@ -84,7 +116,7 @@ export function eventSnapshot(eventId: string, now = Date.now()) {
     count: list.length,
     startAt: Number.isFinite(start) ? start : null,
     lineup: ev.lineup ?? (Number.isFinite(start) ? "live" : "draft"),
-    regOpen: regOpen(ev, now),
+    regOpen: Number.isFinite(start) && (regOpen(ev, now) || start > now),
     enrollments: list.map(({ playerId, handle, name, at }) => ({ playerId, handle, name, at })),
   };
 }

@@ -15,6 +15,8 @@ export interface ScheduledEvent {
   tier: TierId;
   /** Repeat every N minutes (aligned to the epoch), or weekly at a UTC day/hour. */
   everyMin?: number;
+  /** Shift an everyMin cadence by N minutes so paid levels don't all start on the same minute. */
+  offsetMin?: number;
   weekly?: { dow: number; hourUtc: number };
   lateRegMin: number;
   premiumOnly?: boolean;
@@ -54,7 +56,7 @@ export const BOMB_POPS_SERIES: ScheduledEvent[] = [
     deckId: "bomb-pops",
     speed: "regular",
     tier: "free",
-    everyMin: 30,
+    everyMin: 15,
     lateRegMin: 8,
     stake: "free",
     featured: true,
@@ -69,8 +71,10 @@ export const BOMB_POPS_SERIES: ScheduledEvent[] = [
     deckId: "bomb-pops",
     speed: "turbo",
     tier: "free",
-    weekly: { dow: 2, hourUtc: 19 },
-    lateRegMin: 90,
+    // Soft launch: paid levels recur often so one is always starting soon (was weekly Tue 19:00 UTC).
+    everyMin: 30,
+    offsetMin: 10,
+    lateRegMin: 5,
     stake: "micro",
     featured: true,
     lineup: "live",
@@ -84,8 +88,9 @@ export const BOMB_POPS_SERIES: ScheduledEvent[] = [
     deckId: "bomb-pops",
     speed: "regular",
     tier: "free",
-    weekly: { dow: 4, hourUtc: 20 },
-    lateRegMin: 90,
+    everyMin: 60,
+    offsetMin: 20,
+    lateRegMin: 5,
     stake: "mid",
     featured: true,
     lineup: "live",
@@ -99,8 +104,9 @@ export const BOMB_POPS_SERIES: ScheduledEvent[] = [
     deckId: "bomb-pops",
     speed: "turbo",
     tier: "free",
-    weekly: { dow: 6, hourUtc: 21 },
-    lateRegMin: 60,
+    everyMin: 120,
+    offsetMin: 40,
+    lateRegMin: 5,
     stake: "whale",
     featured: true,
     lineup: "live",
@@ -232,7 +238,8 @@ export function isScheduledLive(ev: ScheduledEvent): boolean {
 export function nextStart(ev: ScheduledEvent, now: number): number {
   if (ev.everyMin) {
     const p = ev.everyMin * 60_000;
-    return Math.ceil(now / p) * p;
+    const off = (ev.offsetMin ?? 0) * 60_000;
+    return Math.ceil((now - off) / p) * p + off;
   }
   if (!ev.weekly) return Number.POSITIVE_INFINITY;
   const w = ev.weekly;
@@ -248,10 +255,28 @@ export function nextStart(ev: ScheduledEvent, now: number): number {
 export function lastStart(ev: ScheduledEvent, now: number): number {
   if (ev.everyMin) {
     const p = ev.everyMin * 60_000;
-    return Math.floor(now / p) * p;
+    const off = (ev.offsetMin ?? 0) * 60_000;
+    return Math.floor((now - off) / p) * p + off;
   }
   if (!ev.weekly) return 0;
   return nextStart(ev, now) - 7 * 86_400_000;
+}
+
+/** The heat after `start` (exclusive). */
+export function startAfter(ev: ScheduledEvent, start: number): number {
+  return nextStart(ev, start + 1);
+}
+
+/**
+ * Start a new player should see: the current or upcoming heat if a seat remains,
+ * otherwise the following heat (first-come, first-served overflow).
+ * `count` must be the enrollment count for the current/upcoming heat.
+ */
+export function nextOpenStart(ev: ScheduledEvent, now: number, count: number, capacity: number): number {
+  const inst = lateRegOpen(ev, now) ? lastStart(ev, now) : nextStart(ev, now);
+  if (!Number.isFinite(inst)) return inst;
+  if (count < capacity) return inst;
+  return startAfter(ev, inst);
 }
 
 export function lateRegOpen(ev: ScheduledEvent, now: number) {
