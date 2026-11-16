@@ -71,7 +71,7 @@ export function makeHandler(d: HttpDeps) {
       const url = new URL(req.url ?? "/", "http://x");
       const path = url.pathname;
       if (req.method === "OPTIONS") return send(204, {});
-      if (path === "/" || path === "/health") return send(200, { ok: true, service: "huddle-game-server", ...d.stats() });
+      if (path === "/" || path === "/health") return send(200, { ok: true, service: "huddle-game-server", build: "webcrypto-1", node: process.version, ...d.stats() });
 
       if (path === "/queues" && req.method === "GET") {
         return send(200, { queues: d.lobbyInfo?.() ?? [], stats: d.stats() });

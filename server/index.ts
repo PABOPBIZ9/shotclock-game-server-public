@@ -1,3 +1,4 @@
+import "./webcrypto";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { Lobby } from "./game";

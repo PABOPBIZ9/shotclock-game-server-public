@@ -5,5 +5,8 @@
   "scripts": {
     "start": "npm --prefix server start",
     "ci:server": "npm --prefix server ci"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
